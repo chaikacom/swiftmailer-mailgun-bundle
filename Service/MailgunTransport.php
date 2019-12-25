@@ -120,11 +120,15 @@ class MailgunTransport implements Swift_Transport
         $sent = count($postData['to']);
         try {
             $this->mailgun->messages()->sendMime($domain, $postData['to'], $message->toString(), $postData);
-            $resultStatus = Swift_Events_SendEvent::RESULT_SUCCESS;
+
+            if ($evt) {
+                $evt->setResult(Swift_Events_SendEvent::RESULT_SUCCESS);
+                $evt->setFailedRecipients($failedRecipients);
+                $this->eventDispatcher->dispatchEvent($evt, 'sendPerformed');
+            }
         } catch (\Exception $e) {
             $failedRecipients = $postData['to'];
             $sent = 0;
-            $resultStatus = Swift_Events_SendEvent::RESULT_FAILED;
             $context = [];
             if ($e instanceof HttpClientException) {
                 $context = [
@@ -134,12 +138,14 @@ class MailgunTransport implements Swift_Transport
                 ];
             }
             $this->logger->error($e->getMessage(), $context);
-        }
 
-        if ($evt) {
-            $evt->setResult($resultStatus);
-            $evt->setFailedRecipients($failedRecipients);
-            $this->eventDispatcher->dispatchEvent($evt, 'sendPerformed');
+            if ($evt) {
+                $evt->setResult(Swift_Events_SendEvent::RESULT_FAILED);
+                $evt->setFailedRecipients($failedRecipients);
+                $this->eventDispatcher->dispatchEvent($evt, 'sendPerformed');
+            }
+
+            $this->throwException(new MailgunTransportException($e->getMessage(), $e->getCode(), $e));
         }
 
         return $sent;
@@ -232,5 +238,17 @@ class MailgunTransport implements Swift_Transport
     public function ping()
     {
         return true;
+    }
+
+    private function throwException(MailgunTransportException $e)
+    {
+        if ($evt = $this->eventDispatcher->createTransportExceptionEvent($this, $e)) {
+            $this->eventDispatcher->dispatchEvent($evt, 'exceptionThrown');
+            if (!$evt->bubbleCancelled()) {
+                throw $e;
+            }
+        } else {
+            throw $e;
+        }
     }
 }
